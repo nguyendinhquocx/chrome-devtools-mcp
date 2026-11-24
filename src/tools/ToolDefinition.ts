@@ -15,7 +15,7 @@ import type {
   HeapQueryOptions,
 } from '../processors/HeapSnapshotManager.js';
 import type {McpPage} from '../McpPage.js';
-import type {Logpoint, LogpointOptions} from '../LogpointManager.js';
+import type {Logpoint, LogpointOptions} from '../utils/logpoint.js';
 import type {DevToolsCommentBridge} from '../devtools/DevToolsCommentBridge.js';
 import type {CssFormatterOptions} from '../formatters/CssFormatter.js';
 import type {
@@ -292,6 +292,7 @@ export interface Response {
       resourceTypes?: string[];
       includePreservedRequests?: boolean;
       networkRequestIdInDevToolsUI?: number;
+      serviceWorkerId?: string;
     },
   ): void;
   setIncludeConsoleData(
@@ -316,7 +317,11 @@ export interface Response {
   attachImage(value: ImageContentData): void;
   attachNetworkRequest(
     reqId: number,
-    options?: {requestFilePath?: string; responseFilePath?: string},
+    options?: {
+      requestFilePath?: string;
+      responseFilePath?: string;
+      serviceWorkerId?: string;
+    },
   ): void;
   attachConsoleMessage(
     msgid: number,

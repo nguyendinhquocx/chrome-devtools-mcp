@@ -231,10 +231,19 @@ export class MockCDPSession extends CDPSession {
   override id(): string {
     return '';
   }
+  // Internal Puppeteer API that collectors read the target ID from.
+  target(): {_targetId: string} {
+    throw new Error('Not implemented');
+  }
 }
 
-export function createMockCDPSession(): sinon.SinonStubbedInstance<MockCDPSession> {
+export function createMockCDPSession(
+  options: {targetId?: string} = {},
+): sinon.SinonStubbedInstance<MockCDPSession> {
   const session = sinon.createStubInstance(MockCDPSession);
+  if (options.targetId !== undefined) {
+    session.target.returns({_targetId: options.targetId});
+  }
   const connection = sinon.createStubInstance(Connection);
   connection.session.returns(session);
   session.connection.returns(connection);
@@ -1131,13 +1140,13 @@ export function createMockExtension(
   } = {},
 ): Extension {
   const extension = sinon.createStubInstance(CdpExtension);
-  sinon.stub(extension, 'id').value(options.id ?? 'mock-extension-id');
+  sinon.stub(extension, 'id').get(() => options.id ?? 'mock-extension-id');
   sinon
     .stub(extension, 'path')
-    .value(options.path ?? '/path/to/mock/extension');
-  sinon.stub(extension, 'name').value(options.name ?? 'Mock Extension');
-  sinon.stub(extension, 'version').value(options.version ?? '1.0.0');
-  sinon.stub(extension, 'enabled').value(options.enabled ?? true);
+    .get(() => options.path ?? '/path/to/mock/extension');
+  sinon.stub(extension, 'name').get(() => options.name ?? 'Mock Extension');
+  sinon.stub(extension, 'version').get(() => options.version ?? '1.0.0');
+  sinon.stub(extension, 'enabled').get(() => options.enabled ?? true);
   return extension as unknown as Extension;
 }
 
