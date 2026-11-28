@@ -34,7 +34,10 @@ import {
 import {yargs} from '../third_party/cli.js';
 import type {CallToolResult} from '../third_party/index.js';
 import {logDisclaimers} from '../utils/disclaimers.js';
-import {stripTerminalEscapes} from '../utils/logger.js';
+import {
+  redactDaemonArgsForLogging,
+  stripTerminalEscapes,
+} from '../utils/logger.js';
 import {VERSION} from '../version.js';
 
 const DEFAULT_CLI_ARGS = ['--viaCli'];
@@ -103,7 +106,9 @@ export async function runCli(
   const {argv: cliArgs, restore: restoreLiteralArg} = shieldLiteralArgs(
     rawArgs,
     commandName => {
-      const commandDef = commands[commandName];
+      const commandDef = Object.hasOwn(commands, commandName)
+        ? commands[commandName]
+        : undefined;
       return commandDef ? getCommandArgSpec(commandDef.args) : undefined;
     },
   );
@@ -179,6 +184,22 @@ export async function runCli(
     y =>
       y
         .options(getCliOptions())
+        .requiresArg('filesystemRoot')
+        .check(argv => {
+          const roots = argv.filesystemRoot;
+          if (
+            Array.isArray(roots) &&
+            (roots.length === 0 ||
+              roots.some(
+                root => typeof root === 'string' && root.trim() === '',
+              ))
+          ) {
+            throw new Error(
+              'Invalid --filesystemRoot: at least one non-empty path is required.',
+            );
+          }
+          return true;
+        })
         .example(
           '$0 start --browserUrl http://localhost:9222',
           'Start the server connecting to an existing browser',
@@ -208,7 +229,10 @@ export async function runCli(
           console.log(
             `pid=${data.pid} socket=${data.socketPath} start-date=${data.startDate} version=${data.version}`,
           );
-          console.log(`args=${JSON.stringify(data.args)}`);
+          const redactedArgs = Array.isArray(data.args)
+            ? redactDaemonArgsForLogging(data.args)
+            : [];
+          console.log(`args=${JSON.stringify(redactedArgs)}`);
           if (data.version !== VERSION) {
             console.warn(
               `Warning: Daemon server version (${data.version}) does not match CLI version (${VERSION}). Run 'chrome-devtools start' to update and restart the daemon.`,

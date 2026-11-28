@@ -272,6 +272,125 @@ describe('chrome-devtools CLI', () => {
         sinon.match.instanceOf(Error),
       );
     });
+
+    for (const argv of [
+      ['start', '--workspace', '--sessionId', SESSION_ID],
+      ['start', '--workspace', '--headless', '--sessionId', SESSION_ID],
+      ['start', '--filesystem-root', '--sessionId', SESSION_ID],
+      ['start', '--workspace=', '--sessionId', SESSION_ID],
+    ]) {
+      it(`rejects ${argv.slice(0, -2).join(' ')} without starting or stopping the daemon`, async () => {
+        const mocks = createCliMocks();
+        mocks.isDaemonRunning.returns(true);
+
+        const exitCode = await runCli(argv, mocks.options);
+
+        assert.strictEqual(exitCode, 1);
+        sinon.assert.notCalled(mocks.startDaemon);
+        sinon.assert.notCalled(mocks.stopDaemon);
+      });
+    }
+
+    for (const value of ['', '   ']) {
+      it(`rejects --workspace ${JSON.stringify(value)} without starting or stopping the daemon`, async () => {
+        const mocks = createCliMocks();
+        mocks.isDaemonRunning.returns(true);
+
+        const exitCode = await runCli(
+          ['start', '--workspace', value, '--sessionId', SESSION_ID],
+          mocks.options,
+        );
+
+        assert.strictEqual(exitCode, 1);
+        sinon.assert.notCalled(mocks.startDaemon);
+        sinon.assert.notCalled(mocks.stopDaemon);
+        sinon.assert.calledOnceWithExactly(
+          mocks.consoleError,
+          'Error:',
+          'Invalid --filesystemRoot: at least one non-empty path is required.',
+        );
+      });
+    }
+
+    it('forwards non-empty --workspace paths on start', async () => {
+      const mocks = createCliMocks();
+
+      const exitCode = await runCli(
+        ['start', '--workspace', '/tmp/project', '--sessionId', SESSION_ID],
+        mocks.options,
+      );
+
+      assert.strictEqual(exitCode, 0);
+      sinon.assert.calledOnceWithExactly(
+        mocks.startDaemon,
+        ['--viaCli', '--filesystem-root=/tmp/project'],
+        SESSION_ID,
+      );
+    });
+
+    it('preserves security flags when a start option value matches a tool name', async () => {
+      const mocks = createCliMocks();
+
+      const exitCode = await runCli(
+        [
+          'start',
+          '--workspace',
+          'click',
+          '--no-javascript-evaluation',
+          '--sessionId',
+          SESSION_ID,
+        ],
+        mocks.options,
+      );
+
+      assert.strictEqual(exitCode, 0);
+      sinon.assert.calledOnceWithExactly(
+        mocks.startDaemon,
+        ['--viaCli', '--no-javascript-evaluation', '--filesystem-root=click'],
+        SESSION_ID,
+      );
+    });
+
+    it('preserves security flags when start options precede the start command', async () => {
+      const mocks = createCliMocks();
+
+      const exitCode = await runCli(
+        [
+          '--workspace',
+          'click',
+          '--no-javascript-evaluation',
+          'start',
+          '--sessionId',
+          SESSION_ID,
+        ],
+        mocks.options,
+      );
+
+      assert.strictEqual(exitCode, 0);
+      sinon.assert.calledOnceWithExactly(
+        mocks.startDaemon,
+        ['--viaCli', '--no-javascript-evaluation', '--filesystem-root=click'],
+        SESSION_ID,
+      );
+    });
+
+    it('rejects prototype property names as unknown commands without crashing', async () => {
+      const mocks = createCliMocks();
+
+      const exitCode = await runCli(
+        ['constructor', '--sessionId', SESSION_ID],
+        mocks.options,
+      );
+
+      assert.strictEqual(exitCode, 1);
+      sinon.assert.notCalled(mocks.startDaemon);
+      sinon.assert.notCalled(mocks.sendCommand);
+      sinon.assert.calledWithExactly(
+        mocks.consoleError.firstCall,
+        'Error:',
+        'Unknown argument: constructor',
+      );
+    });
   });
 
   describe('status', () => {
@@ -315,6 +434,39 @@ describe('chrome-devtools CLI', () => {
         'args=["--viaCli"]',
       );
       sinon.assert.notCalled(mocks.consoleWarn);
+    });
+
+    it('redacts sensitive daemon startup args when printing status', async () => {
+      const mocks = createCliMocks();
+      mocks.isDaemonRunning.returns(true);
+      const statusResult: DaemonStatusResult = {
+        pid: 4242,
+        socketPath: '/tmp/server.sock',
+        startDate: '2026-01-01T00:00:00.000Z',
+        version: VERSION,
+        args: [
+          '--viaCli',
+          '--ws-endpoint=wss://user:pass@127.0.0.1:9222/ws?token=SECRET',
+          '--ws-headers={"Authorization":"Bearer HEADER_SECRET"}',
+          '--browser-url=http://admin:pw@127.0.0.1:9222/?key=API_KEY',
+        ],
+      };
+      mocks.sendCommand.resolves({
+        success: true,
+        result: JSON.stringify(statusResult),
+        error: null,
+      });
+
+      const exitCode = await runCli(
+        ['status', '--sessionId', SESSION_ID],
+        mocks.options,
+      );
+
+      assert.strictEqual(exitCode, 0);
+      sinon.assert.calledWithExactly(
+        mocks.consoleLog.thirdCall,
+        'args=["--viaCli","--ws-endpoint=wss://127.0.0.1:9222/ws?REDACTED","--ws-headers=[REDACTED]","--browser-url=http://127.0.0.1:9222/?REDACTED"]',
+      );
     });
 
     it('reports when daemon is not running without querying it', async () => {

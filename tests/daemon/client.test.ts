@@ -5,7 +5,7 @@
  */
 
 import assert from 'node:assert';
-import childProcess, {spawn} from 'node:child_process';
+import childProcess from 'node:child_process';
 import crypto from 'node:crypto';
 import fs, {existsSync, mkdirSync, rmSync, writeFileSync} from 'node:fs';
 import net from 'node:net';
@@ -21,6 +21,7 @@ import {
   stopDaemon,
   verifyDaemonVersion,
 } from '../../src/daemon/client.js';
+import type {DaemonStatusResult} from '../../src/daemon/types.js';
 import {
   DAEMON_SCRIPT_PATH,
   IS_WINDOWS,
@@ -30,7 +31,7 @@ import {
   isDaemonRunning,
 } from '../../src/daemon/utils.js';
 import {VERSION} from '../../src/version.js';
-import {createTempDir} from '../utils.js';
+import {createTempDir, spawnReadyProcess} from '../utils.js';
 
 describe('stopDaemon signal failures', () => {
   it('rejects and keeps the PID file when SIGKILL throws EPERM', async () => {
@@ -141,84 +142,59 @@ describe('daemon client', () => {
     });
 
     it('should stop and allow restarting a daemon when its socket is unreachable', async () => {
-      const child = spawn(
-        process.execPath,
-        ['-e', 'setInterval(() => {}, 1000)', DAEMON_SCRIPT_PATH],
-        {
-          stdio: 'ignore',
-        },
+      using child = await spawnReadyProcess([DAEMON_SCRIPT_PATH]);
+
+      const pidFilePath = getPidFilePath(sessionId);
+      mkdirSync(dirname(pidFilePath), {recursive: true, mode: 0o700});
+      writeFileSync(pidFilePath, String(child.pid), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+      assert.ok(
+        isDaemonRunning(sessionId),
+        'Daemon should be detected as running via PID file',
       );
-      child.unref();
-      assert.ok(child.pid, 'Child process should have a PID');
 
-      try {
-        const pidFilePath = getPidFilePath(sessionId);
-        mkdirSync(dirname(pidFilePath), {recursive: true, mode: 0o700});
-        writeFileSync(pidFilePath, String(child.pid), {
-          encoding: 'utf-8',
-          mode: 0o600,
-        });
-        assert.ok(
-          isDaemonRunning(sessionId),
-          'Daemon should be detected as running via PID file',
-        );
+      await stopDaemon(sessionId);
+      assert.ok(
+        !isDaemonRunning(sessionId),
+        'Unreachable daemon should be stopped via signal fallback',
+      );
 
-        await stopDaemon(sessionId);
-        assert.ok(
-          !isDaemonRunning(sessionId),
-          'Unreachable daemon should be stopped via signal fallback',
-        );
-
-        await startDaemon([], sessionId);
-        assert.ok(
-          isDaemonRunning(sessionId),
-          'New daemon should start after stopping unreachable daemon',
-        );
-        assert.notStrictEqual(getDaemonPid(sessionId), child.pid);
-      } finally {
-        child.kill();
-      }
+      await startDaemon([], sessionId);
+      assert.ok(
+        isDaemonRunning(sessionId),
+        'New daemon should start after stopping unreachable daemon',
+      );
+      assert.notStrictEqual(getDaemonPid(sessionId), child.pid);
     });
 
     it('should not signal an unrelated process when its PID is in the PID file', async () => {
-      const child = spawn(
-        process.execPath,
-        ['-e', 'setInterval(() => {}, 1000)'],
-        {
-          stdio: 'ignore',
-        },
+      using child = await spawnReadyProcess();
+
+      const pidFilePath = getPidFilePath(sessionId);
+      mkdirSync(dirname(pidFilePath), {recursive: true, mode: 0o700});
+      writeFileSync(pidFilePath, String(child.pid), {
+        encoding: 'utf-8',
+        mode: 0o600,
+      });
+
+      await stopDaemon(sessionId);
+      assert.doesNotThrow(
+        () => process.kill(child.pid, 0),
+        'stopDaemon must not kill the unrelated process',
       );
-      child.unref();
-      const childPid = child.pid;
-      assert.ok(childPid, 'Child process should have a PID');
 
-      try {
-        const pidFilePath = getPidFilePath(sessionId);
-        mkdirSync(dirname(pidFilePath), {recursive: true, mode: 0o700});
-        writeFileSync(pidFilePath, String(childPid), {
-          encoding: 'utf-8',
-          mode: 0o600,
-        });
-
-        await stopDaemon(sessionId);
-        assert.doesNotThrow(
-          () => process.kill(childPid, 0),
-          'stopDaemon must not kill the unrelated process',
-        );
-
-        await startDaemon([], sessionId);
-        assert.ok(
-          isDaemonRunning(sessionId),
-          'New daemon should start when PID file points to an unrelated process',
-        );
-        assert.notStrictEqual(getDaemonPid(sessionId), childPid);
-        assert.doesNotThrow(
-          () => process.kill(childPid, 0),
-          'startDaemon must not kill the unrelated process',
-        );
-      } finally {
-        child.kill();
-      }
+      await startDaemon([], sessionId);
+      assert.ok(
+        isDaemonRunning(sessionId),
+        'New daemon should start when PID file points to an unrelated process',
+      );
+      assert.notStrictEqual(getDaemonPid(sessionId), child.pid);
+      assert.doesNotThrow(
+        () => process.kill(child.pid, 0),
+        'startDaemon must not kill the unrelated process',
+      );
     });
   });
 
@@ -250,6 +226,27 @@ describe('daemon client', () => {
         undefined,
         'Should not return warning when daemon is stopped',
       );
+    });
+  });
+
+  describe('status', () => {
+    it('redacts sensitive startup args in daemon status responses', async () => {
+      await startDaemon(
+        [
+          '--viaCli',
+          '--ws-endpoint=wss://user:pass@127.0.0.1:9222/ws?token=SECRET',
+          '--ws-headers={"Authorization":"Bearer HEADER_SECRET"}',
+        ],
+        sessionId,
+      );
+      const response = await sendCommand({method: 'status'}, sessionId);
+      assert.strictEqual(response.success, true);
+      const status: DaemonStatusResult = JSON.parse(response.result);
+      assert.deepStrictEqual(status.args, [
+        '--viaCli',
+        '--ws-endpoint=wss://127.0.0.1:9222/ws?REDACTED',
+        '--ws-headers=[REDACTED]',
+      ]);
     });
   });
 
